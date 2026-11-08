@@ -316,14 +316,15 @@ def test_a_refused_registration_fails_the_stack_with_spellwardens_message(monkey
     assert len(posted) == 1 and replies[0]["Status"] == "FAILED" and replies[0]["Reason"] == message
 
 
-def test_the_connector_matches_the_spec_and_names_the_skill_it_offers():
+def test_the_connector_matches_the_one_submitted_to_the_gallery():
     connector = yaml.safe_load((ROOT / "connector" / "connector.yaml").read_text(encoding="utf-8"))
     assert (connector["schema_version"], connector["name"], connector["tier"], connector["type"]) == (1, "spellwarden", "partner-managed", "mcp")
     assert connector["mcp"]["endpoint"] == "https://dash.spellwarden.ai/api/v1/mcp"
     assert [auth["type"] for auth in connector["mcp"]["auth"]] == ["dynamic_client_registration", "api_key"]
     assert connector["mcp"]["auth"][0]["authorization_server"] == "https://dash.spellwarden.ai"
     assert connector["mcp"]["auth"][1]["headers"] == [{"header": "Authorization", "label": "Spellwarden API key (read access)", "prefix": "Bearer "}]
-    assert connector["skills"] == ["spellwarden-agent-supply-chain-review"] and connector["contact_email"] == "security@spellwarden.ai"
+    # The gallery pull request (aws/tools-for-devops-agent#211) lists the connector alone; the skill follows in its own pull request
+    assert "skills" not in connector and connector["contact_email"] == "security@spellwarden.ai"
     assert "triggers" not in connector                                              # D19
     assert (ROOT / "connector" / "logo.svg").is_file() and (ROOT / "connector" / "README.md").is_file()
 

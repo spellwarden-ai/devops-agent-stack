@@ -15,8 +15,6 @@ mcp:
     - type: api_key
       headers:
         - { header: Authorization, label: "Spellwarden API key (read access)", prefix: "Bearer " }
-skills:
-  - spellwarden-agent-supply-chain-review
 docs_url: https://spellwarden.ai/docs/aws-devops-agent
 support_url: https://spellwarden.ai/docs/aws-devops-agent#support
 contact_email: security@spellwarden.ai
