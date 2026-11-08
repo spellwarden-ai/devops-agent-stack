@@ -6,8 +6,9 @@ Description: >-
 Parameters:
   AgentSpaceId:
     Type: String
-    AllowedPattern: "^[a-zA-Z0-9-]{1,64}$"
-    Description: The Agent Space in this Region that Spellwarden may read.
+    AllowedPattern: "^[a-zA-Z0-9]{1,23}(-[a-zA-Z0-9-]*)?$"
+    MaxLength: 64
+    Description: The Agent Space in this Region that Spellwarden may read (its ID, such as 73dcdf31-7950-42f8-ac3c-096c865c79b3).
   ExternalId:
     Type: String
     AllowedPattern: "^sw-[0-9a-f]{32}$"
@@ -237,7 +238,9 @@ Resources:
       ServiceType: mcpserver
       ServiceDetails:
         MCPServer:
-          Name: !Sub spellwarden-${AgentSpaceId}
+          # DevOps Agent names a tool <server name>_<tool>, at most 64 characters: the server is named after the
+          # first segment of the Agent Space ID (at most 23 characters, AllowedPattern), so the longest tool fits.
+          Name: !Join ["", ["spellwarden-", !Select [0, !Split ["-", !Ref AgentSpaceId]]]]
           Endpoint: https://dash.spellwarden.ai/api/v1/mcp
           AuthorizationConfig:
             BearerToken:
@@ -252,7 +255,7 @@ Resources:
       ServiceId: !GetAtt SpellwardenService.ServiceId
       Configuration:
         MCPServer:
-          Name: !Sub spellwarden-${AgentSpaceId}
+          Name: !Join ["", ["spellwarden-", !Select [0, !Split ["-", !Ref AgentSpaceId]]]]
           Endpoint: https://dash.spellwarden.ai/api/v1/mcp
           Tools:
             - list_organisations
@@ -313,10 +316,10 @@ Resources:
         skills:
           - !GetAtt ReviewSkill.AssetId
         tools:
-          - !Sub spellwarden-${AgentSpaceId}___list_agent_space_connections
-          - !Sub spellwarden-${AgentSpaceId}___list_skills
-          - !Sub spellwarden-${AgentSpaceId}___list_mcp_servers
-          - !Sub spellwarden-${AgentSpaceId}___list_findings
+          - !Join ["", ["spellwarden-", !Select [0, !Split ["-", !Ref AgentSpaceId]], "_list_agent_space_connections"]]
+          - !Join ["", ["spellwarden-", !Select [0, !Split ["-", !Ref AgentSpaceId]], "_list_skills"]]
+          - !Join ["", ["spellwarden-", !Select [0, !Split ["-", !Ref AgentSpaceId]], "_list_mcp_servers"]]
+          - !Join ["", ["spellwarden-", !Select [0, !Split ["-", !Ref AgentSpaceId]], "_list_findings"]]
       Files:
         - Path: AGENT.md
           ContentText: |

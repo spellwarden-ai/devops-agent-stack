@@ -110,6 +110,26 @@ def test_the_tools_of_the_association_are_the_thirteen_read_only_tools():
     assert "${Registration.SecretVersionId}" in token["TokenValue"]["Fn::Sub"] and ":SecretString:api_key::" in token["TokenValue"]["Fn::Sub"]
 
 
+SERVER_NAME = {"Fn::Join": ["", ["spellwarden-", {"Fn::Select": [0, {"Fn::Split": ["-", {"Ref": "AgentSpaceId"}]}]}]]}
+
+
+def test_every_tool_name_fits_devops_agents_64_characters():
+    """End-to-end gate, 2026-11-08: DevOps Agent names a tool <server name>_<tool> and refuses more than 64 characters, which
+    spellwarden-<a 36-character Agent Space ID> broke. The server is named after the ID's first segment, at most 23 characters."""
+    resources_ = template()["Resources"]
+    assert resources_["SpellwardenService"]["Properties"]["ServiceDetails"]["MCPServer"]["Name"] == SERVER_NAME
+    assert resources_["SpellwardenAssociation"]["Properties"]["Configuration"]["MCPServer"]["Name"] == SERVER_NAME
+    pattern = re.compile(template()["Parameters"]["AgentSpaceId"]["AllowedPattern"])
+    assert template()["Parameters"]["AgentSpaceId"]["MaxLength"] == 64
+    longest_segment = "a" * 23
+    assert pattern.match(longest_segment + "-7950-42f8") and pattern.match("73dcdf31-7950-42f8-ac3c-096c865c79b3")
+    assert not pattern.match("a" * 24 + "-x") and not pattern.match("-abc")
+    assert max(len(f"spellwarden-{longest_segment}_{tool}") for tool in READ_TOOLS) == 64
+    for tool_id in resources_["ReviewAgent"]["Properties"]["Metadata"]["tools"]:
+        parts = tool_id["Fn::Join"][1]
+        assert parts[:2] == SERVER_NAME["Fn::Join"][1] and parts[2].startswith("_") and parts[2][1:] in READ_TOOLS
+
+
 def test_the_weekly_review_needs_the_tools_and_carries_the_files_of_the_repository():
     resources_ = template()["Resources"]
     for name in ("ReviewSkill", "ReviewAgent", "ReviewTrigger"):
