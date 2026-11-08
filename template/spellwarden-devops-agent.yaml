@@ -1,0 +1,353 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Lets Spellwarden read one AWS DevOps Agent Agent Space through a read-only role, and, if you allow it, switch off
+  failing skills, install vetted skills and add Spellwarden's tools. Template 1.0.0.
+
+Parameters:
+  AgentSpaceId:
+    Type: String
+    AllowedPattern: "^[a-zA-Z0-9-]{1,64}$"
+    Description: The Agent Space in this Region that Spellwarden may read.
+  ExternalId:
+    Type: String
+    AllowedPattern: "^sw-[0-9a-f]{32}$"
+    Description: Set by Spellwarden for this connection. Use the value the Spellwarden dashboard shows.
+  SetupCode:
+    Type: String
+    NoEcho: true
+    AllowedPattern: "^swsetup_[A-Za-z0-9_-]{40}$"
+    Description: Single use, valid for one hour. Use the value the Spellwarden dashboard shows and do not share it.
+  AllowSwitchOff:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Spellwarden may set a failing skill to INACTIVE (adds aidevops:UpdateAsset).
+  AllowInstall:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Spellwarden may install, update and remove the catalog skills it installed (adds aidevops:CreateAsset, UpdateAsset and DeleteAsset).
+  ReadMemories:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Spellwarden also reads the memory stores other than directives, the agent's own and custom ones. Spellwarden enforces this choice, not IAM; IAM cannot limit reads to some asset types (see the README).
+  ConnectSpellwardenTools:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Register Spellwarden's MCP server in this Agent Space and allow its read-only tools.
+  WeeklyReview:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Add the supply chain review skill, its custom agent and a weekly trigger. Each run is agent time on your bill, about USD 2.50 for five minutes. Needs ConnectSpellwardenTools.
+
+Rules:
+  WeeklyReviewNeedsTools:
+    RuleCondition: !Equals [!Ref WeeklyReview, "true"]
+    Assertions:
+      - Assert: !Equals [!Ref ConnectSpellwardenTools, "true"]
+        AssertDescription: WeeklyReview needs ConnectSpellwardenTools.
+
+Conditions:
+  SwitchOff: !Equals [!Ref AllowSwitchOff, "true"]
+  Install: !Equals [!Ref AllowInstall, "true"]
+  ConnectTools: !Equals [!Ref ConnectSpellwardenTools, "true"]
+  Weekly: !And [!Equals [!Ref WeeklyReview, "true"], !Equals [!Ref ConnectSpellwardenTools, "true"]]
+
+Resources:
+  SpellwardenRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub SpellwardenDevOpsAgent-${AgentSpaceId}
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::359360911388:role/spellwarden-devops-agent
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: Read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadAgentSpace
+                Effect: Allow
+                Action:
+                  - aidevops:GetAgentSpace
+                  - aidevops:ListAssets
+                  - aidevops:GetAsset
+                  - aidevops:GetAssetContent
+                  - aidevops:ListAssetFiles
+                  - aidevops:GetAssetFile
+                  - aidevops:ListAssociations
+                Resource: !Sub arn:aws:aidevops:${AWS::Region}:${AWS::AccountId}:agentspace/${AgentSpaceId}
+              - Sid: ReadServices
+                Effect: Allow
+                Action:
+                  - aidevops:ListServices
+                  - aidevops:GetService
+                Resource: "*"
+              - Sid: ReadAssetTypes
+                Effect: Allow
+                Action: aidevops:ListAssetTypes
+                Resource: "*"
+        - !If
+          - SwitchOff
+          - PolicyName: SwitchOff
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: SetSkillStatus
+                  Effect: Allow
+                  Action: aidevops:UpdateAsset
+                  Resource: !Sub arn:aws:aidevops:${AWS::Region}:${AWS::AccountId}:agentspace/${AgentSpaceId}
+          - !Ref AWS::NoValue
+        - !If
+          - Install
+          - PolicyName: Install
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: ManageInstalledSkills
+                  Effect: Allow
+                  Action:
+                    - aidevops:CreateAsset
+                    - aidevops:UpdateAsset
+                    - aidevops:DeleteAsset
+                  Resource: !Sub arn:aws:aidevops:${AWS::Region}:${AWS::AccountId}:agentspace/${AgentSpaceId}
+          - !Ref AWS::NoValue
+
+  ConnectionSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub spellwarden-devops-agent/${AgentSpaceId}
+      Description: Spellwarden's connection token and read-only API key for this Agent Space. Written by the registration function only.
+      SecretString: '{"api_key": "", "connection_token": ""}'
+
+  RegisterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: Secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                Resource: !Ref ConnectionSecret
+
+  RegisterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt RegisterRole.Arn
+      Environment:
+        Variables:
+          SECRET: !Ref ConnectionSecret
+          BASE: https://dash.spellwarden.ai/api/public/devops-agent
+      Code:
+        ZipFile: |
+          import json,os,time,urllib.request as u,boto3
+          S=boto3.client("secretsmanager");ID=os.environ["SECRET"]
+          O={"AllowSwitchOff":"allow_switch_off","AllowInstall":"allow_install","ReadMemories":"read_memories","ConnectSpellwardenTools":"connect_tools","WeeklyReview":"weekly_review"}
+          W=("assume_role_denied","forbidden","agent_space_not_found")
+          def post(path,body,c=None):
+              while True:
+                  r=u.Request(os.environ["BASE"]+path,json.dumps(body).encode(),{"Content-Type":"application/json"},method="POST")
+                  try:
+                      with u.urlopen(r,timeout=20) as f:return json.load(f)
+                  except u.HTTPError as x:
+                      try:m=json.loads(x.read())
+                      except Exception:m={}
+                      if c and m.get("error") in W and c.get_remaining_time_in_millis()>20000:
+                          time.sleep(5);continue
+                      f=Exception(m.get("message") or str(x));f.e=m.get("error");raise f from None
+          def reply(e,c,ok,data=None,why=""):
+              b=json.dumps({"Status":"SUCCESS" if ok else "FAILED","Reason":why[:400] or "See the log","PhysicalResourceId":e.get("PhysicalResourceId") or c.log_stream_name,"StackId":e["StackId"],"RequestId":e["RequestId"],"LogicalResourceId":e["LogicalResourceId"],"Data":data or {}}).encode()
+              u.urlopen(u.Request(e["ResponseURL"],b,method="PUT"),timeout=10)
+          def secret():return json.loads(S.get_secret_value(SecretId=ID)["SecretString"])
+          def handler(e,c):
+              p=e["ResourceProperties"];k=e["RequestType"]
+              try:
+                  b={"external_id":p["ExternalId"],"role_arn":p["RoleArn"],"account_id":c.invoked_function_arn.split(":")[4],"region":os.environ["AWS_REGION"],"agent_space_id":p["AgentSpaceId"],"stack_id":e["StackId"],"template_version":p["TemplateVersion"],"options":{O[n]:p[n]=="true" for n in O}}
+                  if k=="Delete":
+                      try:post("/unregister",{"connection_token":secret()["connection_token"],"stack_id":e["StackId"]})
+                      except Exception:pass
+                      return reply(e,c,True)
+                  t=k!="Create" and p["SetupCode"]==e["OldResourceProperties"]["SetupCode"]
+                  if not t:
+                      try:
+                          a=post("/register",{**b,"setup_code":p["SetupCode"]},c)
+                          v=S.put_secret_value(SecretId=ID,SecretString=json.dumps({"api_key":a.get("api_key",""),"connection_token":a["connection_token"]}))["VersionId"]
+                      except Exception as x:
+                          # a rollback brings back a code already used: keep the connection the secret holds
+                          if k=="Create" or getattr(x,"e",0)!="setup_invalid" or "connection_token" not in secret():raise
+                          t=x
+                  if t:
+                      try:a=post("/register",{**b,"connection_token":secret()["connection_token"]},c)
+                      except Exception:
+                          if t is True:raise
+                          raise t from None
+                      v=S.get_secret_value(SecretId=ID)["VersionId"]
+                  reply(e,c,True,{"SecretVersionId":v,"ConnectionStatus":a["status"]})
+              except Exception as x:
+                  reply(e,c,False,why=str(x))
+
+  Registration:
+    Type: Custom::SpellwardenRegistration
+    Properties:
+      ServiceToken: !GetAtt RegisterFunction.Arn
+      ExternalId: !Ref ExternalId
+      SetupCode: !Ref SetupCode
+      RoleArn: !GetAtt SpellwardenRole.Arn
+      AgentSpaceId: !Ref AgentSpaceId
+      TemplateVersion: 1.0.0
+      AllowSwitchOff: !Ref AllowSwitchOff
+      AllowInstall: !Ref AllowInstall
+      ReadMemories: !Ref ReadMemories
+      ConnectSpellwardenTools: !Ref ConnectSpellwardenTools
+      WeeklyReview: !Ref WeeklyReview
+
+  SpellwardenService:
+    Type: AWS::DevOpsAgent::Service
+    Condition: ConnectTools
+    Properties:
+      ServiceType: mcpserver
+      ServiceDetails:
+        MCPServer:
+          Name: !Sub spellwarden-${AgentSpaceId}
+          Endpoint: https://dash.spellwarden.ai/api/v1/mcp
+          AuthorizationConfig:
+            BearerToken:
+              TokenName: spellwarden-api-key
+              TokenValue: !Sub "{{resolve:secretsmanager:${ConnectionSecret}:SecretString:api_key::${Registration.SecretVersionId}}}"
+
+  SpellwardenAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Condition: ConnectTools
+    Properties:
+      AgentSpaceId: !Ref AgentSpaceId
+      ServiceId: !GetAtt SpellwardenService.ServiceId
+      Configuration:
+        MCPServer:
+          Name: !Sub spellwarden-${AgentSpaceId}
+          Endpoint: https://dash.spellwarden.ai/api/v1/mcp
+          Tools:
+            - list_organisations
+            - get_organisation
+            - list_skills
+            - get_skill
+            - list_findings
+            - get_trust_score
+            - list_policy_packs
+            - list_registry_entries
+            - get_runtime_inventory
+            - get_eval_run
+            - get_migration_report
+            - list_mcp_servers
+            - list_agent_space_connections
+
+  ReviewSkill:
+    Type: AWS::DevOpsAgent::Asset
+    Condition: Weekly
+    Properties:
+      AgentSpaceId: !Ref AgentSpaceId
+      AssetType: skill
+      Metadata:
+        name: spellwarden-agent-supply-chain-review
+        description: Review the safety of this agent's own skills, instruction files and MCP servers with Spellwarden. Use when asked whether the agent's skills or tools are safe, and on the weekly supply chain review.
+        agent_types:
+          - GENERIC
+      Files:
+        - Path: SKILL.md
+          ContentText: |
+            ---
+            name: spellwarden-agent-supply-chain-review
+            description: Review the safety of this agent's own skills, instruction files and MCP servers with Spellwarden. Use when asked whether the agent's skills or tools are safe, and on the weekly supply chain review.
+            license: Apache-2.0
+            metadata:
+              version: 1.0.0
+            ---
+
+            # Agent supply chain review
+
+            Use Spellwarden's read-only tools. Make no AWS calls.
+
+            1. Call `list_agent_space_connections` and note this Agent Space's connection, its status and its last sync.
+            2. Call `list_skills` and `list_mcp_servers` for the connected organisation. Note anything quarantined or switched off, and any server that allows all tools.
+            3. Call `list_findings` with status `open` and severity `critical`, then `high`. Note findings that are new since the last report.
+            4. Report new or changed findings, quarantined or switched-off skills, servers that allow all tools, and items that were not scanned. Name each item and give its severity or trust score.
+
+            Keep the report short. If a tool answers with an error, say which tool and stop. Do not guess.
+
+  ReviewAgent:
+    Type: AWS::DevOpsAgent::Asset
+    Condition: Weekly
+    Properties:
+      AgentSpaceId: !Ref AgentSpaceId
+      AssetType: custom_agent
+      Metadata:
+        name: spellwarden-supply-chain-review
+        skills:
+          - !GetAtt ReviewSkill.AssetId
+        tools:
+          - !Sub spellwarden-${AgentSpaceId}___list_agent_space_connections
+          - !Sub spellwarden-${AgentSpaceId}___list_skills
+          - !Sub spellwarden-${AgentSpaceId}___list_mcp_servers
+          - !Sub spellwarden-${AgentSpaceId}___list_findings
+      Files:
+        - Path: AGENT.md
+          ContentText: |
+            You run the weekly supply chain review for this Agent Space.
+
+            Use the skill spellwarden-agent-supply-chain-review. Write a short report with four headings: New findings, Quarantined or switched-off skills, Servers that allow all tools, Not scanned. Under each heading list the items, or write "None".
+
+            Do nothing else. Do not change anything in the Agent Space and do not open an investigation.
+
+  ReviewTrigger:
+    Type: AWS::DevOpsAgent::Trigger
+    Condition: Weekly
+    Properties:
+      AgentSpaceId: !Ref AgentSpaceId
+      Type: TIME_BASED
+      Status: Active
+      Condition:
+        Schedule:
+          Expression: rate(7 days)
+      Action:
+        actionType: create:task
+        task:
+          agent: !Sub custom:${ReviewAgent.AssetId}
+
+Outputs:
+  RoleArn:
+    Description: The role Spellwarden assumes to read this Agent Space.
+    Value: !GetAtt SpellwardenRole.Arn
+  ConnectionStatus:
+    Description: What Spellwarden answered when it registered this stack.
+    Value: !GetAtt Registration.ConnectionStatus
+  TemplateVersion:
+    Description: The template version.
+    Value: 1.0.0

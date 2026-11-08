@@ -1,0 +1,4 @@
+# What the checks of this repository need (CI and `python3 -m pytest` locally).
+cfn-lint==1.60.0
+pytest==9.2.0
+PyYAML==6.0.3

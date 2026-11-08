@@ -1,0 +1,45 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the checks
+        run: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+      - name: Lint the template against the CloudFormation resource schemas
+        run: .venv/bin/cfn-lint template/spellwarden-devops-agent.yaml
+      - name: Test the policies, the registration function and the files the template carries
+        run: .venv/bin/python -m pytest -q tests
+      - name: Print the template SHA-256 for the backend pin
+        run: sha256sum template/spellwarden-devops-agent.yaml
+
+  scan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan the skills with the Spellwarden action
+        uses: spellwarden-ai/scan@7e637381f826a222344aa44816524cd1905e6cc6  # v1.9.1
+        with:
+          path: skills
+          fail-on: low
+          upload: "false"
+          comment: "false"
+          telemetry: "false"
+          sarif-upload: ${{ github.event_name == 'push' }}
